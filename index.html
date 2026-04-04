@@ -9,43 +9,47 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
 
-  <!-- Firebase SDK の読み込み -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
     import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
-    // =====================================================================
-    // const firebaseConfig = {
-  apiKey: "AIzaSyCb8PhCSbtD-LhLVhUZDICiQ_BArl9TxHc",
-  authDomain: "nippaeigyou.firebaseapp.com",
-  projectId: "nippaeigyou",
-  storageBucket: "nippaeigyou.firebasestorage.app",
-  messagingSenderId: "820052324571",
-  appId: "1:820052324571:web:302b8d50acc19f94811cfe"
-};
-    // =====================================================================
-    const firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-      projectId: "YOUR_PROJECT_ID",
-      storageBucket: "YOUR_PROJECT_ID.appspot.com",
-      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-      appId: "YOUR_APP_ID"
-    };
-    // =====================================================================
+    try {
+      // =====================================================================
+      // 【重要】ここをご自身の Firebase の設定に必ず書き換えてください！
+      // （"YOUR_API_KEY" などを実際の文字にします。記号を消さないように注意）
+      // =====================================================================
+      const firebaseConfig = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+        projectId: "YOUR_PROJECT_ID",
+        storageBucket: "YOUR_PROJECT_ID.appspot.com",
+        messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+        appId: "YOUR_APP_ID"
+      };
+      // =====================================================================
 
-    // Firebaseの初期化
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
+      // 初期化処理
+      if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+        throw new Error("Firebaseの設定（firebaseConfig）が書き換えられていません。");
+      }
 
-    // グローバルにFirebase関数を公開（下のスクリプトから使えるようにする）
-    window.db = db;
-    window.doc = doc;
-    window.setDoc = setDoc;
-    window.getDoc = getDoc;
+      const app = initializeApp(firebaseConfig);
+      const db = getFirestore(app);
 
-    // 初期化が終わったらクラウドからデータを読み込む
-    window.loadFromCloud();
+      window.db = db;
+      window.doc = doc;
+      window.setDoc = setDoc;
+      window.getDoc = getDoc;
+
+    } catch (error) {
+      console.error("Firebase初期化エラー:", error);
+      alert("⚠️ データベースの設定エラーです。\nコード内の firebaseConfig が正しく入力されているか確認してください。");
+    } finally {
+      // エラーが起きても必ず次の処理（読み込み画面を消す処理）に進ませる
+      setTimeout(() => {
+        if(window.loadFromCloud) window.loadFromCloud();
+      }, 500);
+    }
   </script>
 
   <style>
@@ -60,10 +64,9 @@
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-2 sm:p-4">
 
-  <!-- 読み込み中の画面 -->
   <div id="loading">
     <div class="spinner mb-4"></div>
-    <p class="text-indigo-600 font-bold">クラウドデータを読み込んでいます...</p>
+    <p class="text-indigo-600 font-bold" id="loading-text">クラウドデータを読み込んでいます...</p>
   </div>
 
   <div class="max-w-[1400px] mx-auto space-y-4" id="app" style="display: none;"></div>
@@ -86,11 +89,14 @@
 
     // --- Firebase データ連携処理 ---
     
-    // クラウドから読み込む
     window.loadFromCloud = async function() {
-      if (!window.db) return; // SDK読み込み待ち
-      
       try {
+        if (!window.db) {
+          console.warn("データベース未接続のため、ローカルモードで起動します");
+          loadSampleData();
+          return;
+        }
+
         const docRef = window.doc(window.db, "schedules", "public_data");
         const docSnap = await window.getDoc(docRef);
 
@@ -103,23 +109,27 @@
           state.year = data.year || new Date().getFullYear();
           state.month = data.month || new Date().getMonth() + 1;
         } else {
-          // データがない場合はサンプル
           loadSampleData();
         }
       } catch (e) {
         console.error("データの取得に失敗しました", e);
         loadSampleData();
+        showError('データベースの読み込みに失敗しました。アクセス権限（ルールの設定）などを確認してください。');
       } finally {
+        // 絶対にローディング画面を消す
         document.getElementById('loading').style.display = 'none';
         document.getElementById('app').style.display = 'block';
         render();
       }
     };
 
-    // クラウドへ保存する
     window.saveToCloud = async function() {
       if (state.scheduleData.length === 0) {
         showError('保存するデータがありません。');
+        return;
+      }
+      if (!window.db) {
+        showError('データベースに接続されていません。コードの設定を確認してください。');
         return;
       }
       
@@ -138,12 +148,12 @@
           updatedAt: new Date().toISOString()
         });
         
-        state.saveMessage = 'クラウドに共有しました！URLを送れば全員が確認できます。';
+        state.saveMessage = 'クラウドに共有しました！このURLを送れば全員が確認できます。';
         state.error = '';
         state.fileName = '';
       } catch (e) {
         console.error("保存エラー:", e);
-        showError('保存に失敗しました。設定を確認してください。');
+        showError('保存に失敗しました。Firebaseの「データベースのルール」がテストモードになっているか確認してください。');
       } finally {
         state.isSaving = false;
         render();
@@ -450,15 +460,7 @@
 
       cells.forEach(cell => {
         if (!cell) {
-          calendarHtml += `<div class="p-2 border border-transparent rounded-lg bg-gray-50/50"></div>`;
-          return;
-        }
-        let style = cell.wd === '日' ? 'border-red-100 bg-red-50/10' : cell.wd === '土' ? 'border-blue-100 bg-blue-50/10' : 'border-gray-100';
-        let textStyle = cell.wd === '日' ? 'text-red-500' : cell.wd === '土' ? 'text-blue-500' : 'text-gray-700';
-        let shiftHtml = cell.shift ? `<div class="mt-auto text-center py-2 rounded-md text-xs sm:text-sm font-bold shadow-sm ${getShiftColor(cell.shift)}">${cell.shift}</div>` : '';
-        
-        calendarHtml += `
-          <div class="bg-white border rounded-lg p-1.5 sm:p-2 flex flex-col min-h-[90px] sm:min-h-[110px] shadow-sm ${style}">
+          calendarHtml += `<div class="p-2 border border-transparent rounded-lg p-1.5 sm:p-2 flex flex-col min-h-[90px] sm:min-h-[110px] shadow-sm ${style}">
             <div class="text-right text-sm sm:text-base font-bold mb-1 ${textStyle}">${cell.dateStr}</div>
             ${shiftHtml}
           </div>
