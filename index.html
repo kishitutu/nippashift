@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>スマートシフト管理</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+
+  <!-- Firebase SDK の読み込み -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+    import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+    // =====================================================================
+    // const firebaseConfig = {
+  apiKey: "AIzaSyCb8PhCSbtD-LhLVhUZDICiQ_BArl9TxHc",
+  authDomain: "nippaeigyou.firebaseapp.com",
+  projectId: "nippaeigyou",
+  storageBucket: "nippaeigyou.firebasestorage.app",
+  messagingSenderId: "820052324571",
+  appId: "1:820052324571:web:302b8d50acc19f94811cfe"
+};
+    // =====================================================================
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    // =====================================================================
+
+    // Firebaseの初期化
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // グローバルにFirebase関数を公開（下のスクリプトから使えるようにする）
+    window.db = db;
+    window.doc = doc;
+    window.setDoc = setDoc;
+    window.getDoc = getDoc;
+
+    // 初期化が終わったらクラウドからデータを読み込む
+    window.loadFromCloud();
+  </script>
+
+  <style>
+    th, td { white-space: nowrap; }
+    .sticky-col { position: sticky; left: 0; z-index: 10; background-color: white; }
+    .sticky-header { position: sticky; top: 0; z-index: 20; background-color: white; }
+    .sticky-corner { position: sticky; left: 0; top: 0; z-index: 30; background-color: white; }
+    #loading { position: fixed; inset: 0; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 50; }
+    .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #4f46e5; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-2 sm:p-4">
+
+  <!-- 読み込み中の画面 -->
+  <div id="loading">
+    <div class="spinner mb-4"></div>
+    <p class="text-indigo-600 font-bold">クラウドデータを読み込んでいます...</p>
+  </div>
+
+  <div class="max-w-[1400px] mx-auto space-y-4" id="app" style="display: none;"></div>
+
+  <script>
+    let state = {
+      scheduleData: [],
+      dates: [],
+      weekdays: [],
+      monthTitle: '勤務スケジュール',
+      year: new Date().getFullYear(),
+      month: new Date().getMonth() + 1,
+      viewMode: window.innerWidth < 768 ? 'calendar' : 'table',
+      selectedEmpIndex: 0,
+      fileName: '',
+      error: '',
+      saveMessage: '',
+      isSaving: false
+    };
+
+    // --- Firebase データ連携処理 ---
+    
+    // クラウドから読み込む
+    window.loadFromCloud = async function() {
+      if (!window.db) return; // SDK読み込み待ち
+      
+      try {
+        const docRef = window.doc(window.db, "schedules", "public_data");
+        const docSnap = await window.getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          state.scheduleData = data.scheduleData || [];
+          state.dates = data.dates || [];
+          state.weekdays = data.weekdays || [];
+          state.monthTitle = data.monthTitle || '勤務スケジュール';
+          state.year = data.year || new Date().getFullYear();
+          state.month = data.month || new Date().getMonth() + 1;
+        } else {
+          // データがない場合はサンプル
+          loadSampleData();
+        }
+      } catch (e) {
+        console.error("データの取得に失敗しました", e);
+        loadSampleData();
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+        render();
+      }
+    };
+
+    // クラウドへ保存する
+    window.saveToCloud = async function() {
+      if (state.scheduleData.length === 0) {
+        showError('保存するデータがありません。');
+        return;
+      }
+      
+      state.isSaving = true;
+      render();
+
+      try {
+        const docRef = window.doc(window.db, "schedules", "public_data");
+        await window.setDoc(docRef, {
+          scheduleData: state.scheduleData,
+          dates: state.dates,
+          weekdays: state.weekdays,
+          monthTitle: state.monthTitle,
+          year: state.year,
+          month: state.month,
+          updatedAt: new Date().toISOString()
+        });
+        
+        state.saveMessage = 'クラウドに共有しました！URLを送れば全員が確認できます。';
+        state.error = '';
+        state.fileName = '';
+      } catch (e) {
+        console.error("保存エラー:", e);
+        showError('保存に失敗しました。設定を確認してください。');
+      } finally {
+        state.isSaving = false;
+        render();
+        setTimeout(() => { state.saveMessage = ''; render(); }, 5000);
+      }
+    };
+
+    function loadSampleData() {
+      state.monthTitle = '【サンプル】Excelを読み込んでください';
+      state.dates = Array.from({ length: 30 }, (_, i) => String(i + 1));
+      state.weekdays = ['水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木'];
+      state.scheduleData = [
+        { id: '000', name: 'サンプル 太郎', shifts: ['休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早'] }
+      ];
+    }
+
+    function showError(msg) {
+      state.error = msg;
+      state.saveMessage = '';
+      render();
+    }
+
+    function toHalfWidth(str) {
+      return str.replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+    }
+
+    function triggerFileInput() { document.getElementById('fileInput').click(); }
+
+    function handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const fileExt = file.name.split('.').pop().toLowerCase();
+      if (fileExt !== 'xlsx' && fileExt !== 'xls' && fileExt !== 'csv') {
+        showError('ExcelまたはCSVファイルを選択してください。');
+        return;
+      }
+
+      state.fileName = file.name;
+      state.error = '';
+      state.saveMessage = '';
+      render();
+
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const bstr = evt.target.result;
+          const wb = XLSX.read(bstr, { type: 'binary' });
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+          const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+          if (rows.length < 5) throw new Error("データが不足しています。");
+
+          let foundTitle = '勤務スケジュール';
+          let currentYear = new Date().getFullYear();
+          let currentMonth = new Date().getMonth() + 1;
+
+          for (let i = 0; i < 5; i++) {
+            if (!rows[i]) continue;
+            for (let j = 0; j < rows[i].length; j++) {
+              const val = String(rows[i][j] || '');
+              if (val.includes('年') && val.includes('月')) {
+                foundTitle = val;
+                const match = toHalfWidth(val).match(/(\d{4})年\s*(\d{1,2})月/);
+                if (match) {
+                  currentYear = parseInt(match[1], 10);
+                  currentMonth = parseInt(match[2], 10);
+                }
+                break;
+              }
+            }
+          }
+
+          let dateRowIdx = -1, dateColIdx = -1;
+          for (let i = 0; i < 10; i++) {
+            if (!rows[i]) continue;
+            for (let j = 0; j < rows[i].length; j++) {
+              if (String(rows[i][j]).trim() === '1') {
+                dateRowIdx = i; dateColIdx = j; break;
+              }
+            }
+            if (dateRowIdx !== -1) break;
+          }
+
+          if (dateRowIdx === -1) throw new Error("日付行が見つかりませんでした。");
+
+          const extDates = [];
+          let col = dateColIdx;
+          while (true) {
+            const cellVal = String(rows[dateRowIdx][col] || '').trim();
+            if (!cellVal || isNaN(parseInt(cellVal))) break;
+            extDates.push(cellVal);
+            col++;
+          }
+          
+          const extWeekdays = [];
+          for (let i = 0; i < extDates.length; i++) {
+            extWeekdays.push(String(rows[dateRowIdx + 1][dateColIdx + i] || '').trim());
+          }
+
+          const idColIdx = dateColIdx - 1;
+          const extEmployees = [];
+
+          for (let i = dateRowIdx + 2; i < rows.length; i++) {
+            const row1 = rows[i] || [];
+            const idVal = String(row1[idColIdx] || '').trim();
+
+            if (idVal && /\d+/.test(idVal) && i + 1 < rows.length) {
+              const row2 = rows[i + 1] || [];
+              const nameVal = String(row2[idColIdx] || '').trim();
+              const shifts = [];
+              for(let d = 0; d < extDates.length; d++) {
+                 shifts.push(String(row2[dateColIdx + d] || '').trim());
+              }
+              extEmployees.push({ id: idVal, name: nameVal || '氏名未設定', shifts });
+              i++; 
+            }
+          }
+
+          if (extEmployees.length > 0) {
+            state.monthTitle = foundTitle;
+            state.year = currentYear;
+            state.month = currentMonth;
+            state.dates = extDates;
+            state.weekdays = extWeekdays;
+            state.scheduleData = extEmployees;
+            state.selectedEmpIndex = 0;
+            state.fileName = `${file.name} を読み込みました。「全員に共有する」を押してください。`;
+            render();
+          } else {
+            throw new Error("フォーマットが一致しませんでした。");
+          }
+        } catch (err) {
+          showError(err.message || '読み込みエラーが発生しました。');
+        }
+        document.getElementById('fileInput').value = '';
+      };
+      reader.readAsBinaryString(file);
+    }
+
+    function getWeekdayHeaderStyle(wd) {
+      if (wd === '土') return 'text-blue-700 bg-blue-50';
+      if (wd === '日') return 'text-red-700 bg-red-50';
+      return 'text-gray-600 bg-white';
+    }
+    function getDayColumnStyle(wd) {
+      if (wd === '土') return 'bg-blue-50/20';
+      if (wd === '日') return 'bg-red-50/20';
+      return 'bg-white';
+    }
+    function getShiftColor(shiftStr) {
+      if (!shiftStr) return '';
+      const s = shiftStr.trim();
+      if (s.includes('泊')) return 'bg-purple-100 text-purple-800 font-bold border border-purple-200';
+      if (s.includes('明')) return 'bg-cyan-100 text-cyan-800 font-bold border border-cyan-200';
+      if (s.includes('法休') || s.includes('公休')) return 'bg-red-100 text-red-800 font-medium border border-red-200';
+      if (s.includes('年休')) return 'bg-pink-100 text-pink-800 font-medium border border-pink-200';
+      if (s.includes('変休')) return 'bg-orange-100 text-orange-800 font-medium border border-orange-200';
+      if (s.includes('遅日') || s.includes('変出')) return 'bg-blue-100 text-blue-800 font-medium border border-blue-200';
+      if (s === '〇') return 'bg-emerald-100 text-emerald-800 font-bold border border-emerald-200';
+      return 'bg-gray-100 text-gray-800 border border-gray-200';
+    }
+
+    function changeView(mode) { state.viewMode = mode; render(); }
+    function changeEmp(index) { state.selectedEmpIndex = index; render(); }
+
+    function copyUrl() {
+      navigator.clipboard.writeText(window.location.href);
+      alert('URLをコピーしました。スタッフに共有してください。');
+    }
+
+    function render() {
+      const appDiv = document.getElementById('app');
+      
+      let html = `
+        <header class="flex flex-col lg:flex-row lg:items-center justify-between bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-100 gap-4">
+          <div class="flex items-center gap-3">
+            <div class="p-2 sm:p-3 bg-indigo-600 text-white rounded-lg"><span class="material-icons-outlined">calendar_month</span></div>
+            <div>
+              <h1 class="text-xl sm:text-2xl font-bold text-gray-900">${state.monthTitle}</h1>
+              <p class="text-xs sm:text-sm text-gray-500">クラウド共有スケジュール</p>
+            </div>
+          </div>
+          
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div class="flex bg-gray-100 p-1 rounded-lg">
+              <button onclick="changeView('table')" class="flex-1 flex justify-center items-center gap-1 px-4 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'table' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
+                <span class="material-icons-outlined" style="font-size: 18px;">grid_on</span> 全体表
+              </button>
+              <button onclick="changeView('calendar')" class="flex-1 flex justify-center items-center gap-1 px-4 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'calendar' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
+                <span class="material-icons-outlined" style="font-size: 18px;">event</span> 個人
+              </button>
+            </div>
+
+            <div class="flex gap-2">
+              <button onclick="triggerFileInput()" class="flex-1 sm:flex-none flex items-center justify-center gap-1 px-4 py-2 rounded-lg font-bold transition-all bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 shadow-sm">
+                <span class="material-icons-outlined" style="font-size: 18px;">upload_file</span> Excel読込
+              </button>
+              <button onclick="saveToCloud()" disabled="${state.scheduleData.length === 0 || state.isSaving}" class="flex-1 sm:flex-none flex items-center justify-center gap-1 px-4 py-2 rounded-lg font-bold transition-all ${state.scheduleData.length === 0 || state.isSaving ? 'bg-gray-300 text-gray-500' : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'}">
+                <span class="material-icons-outlined" style="font-size: 18px;">${state.isSaving ? 'sync' : 'share'}</span> ${state.isSaving ? '保存中...' : '全員に共有する'}
+              </button>
+            </div>
+            <input type="file" id="fileInput" accept=".xlsx, .xls, .csv" class="hidden" onchange="handleFileUpload(event)">
+          </div>
+        </header>
+      `;
+
+      if (state.error) {
+        html += `<div class="p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700"><span class="material-icons-outlined">error_outline</span><div><p class="font-bold">エラー</p><p class="text-sm">${state.error}</p></div></div>`;
+      }
+      if (state.saveMessage) {
+        html += `
+          <div class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3 text-emerald-800 shadow-sm">
+            <span class="material-icons-outlined text-emerald-600">cloud_done</span>
+            <div class="flex-1">
+              <p class="font-bold mb-1">${state.saveMessage}</p>
+              <button onclick="copyUrl()" class="mt-2 px-4 py-1.5 bg-emerald-600 text-white rounded text-sm font-bold hover:bg-emerald-700">URLをコピーする</button>
+            </div>
+          </div>`;
+      } else if (state.fileName && !state.error) {
+        html += `<div class="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-blue-800 text-sm shadow-sm"><span class="material-icons-outlined text-blue-600">info</span>${state.fileName}</div>`;
+      }
+
+      if (state.viewMode === 'table') html += renderTableView();
+      else html += renderCalendarView();
+
+      appDiv.innerHTML = html;
+    }
+
+    function renderTableView() {
+      if (state.scheduleData.length === 0) return `<div class="bg-white rounded-xl border border-gray-100 flex flex-col items-center justify-center h-64 text-gray-400"><p>Excelファイル（またはCSV）をアップロードしてください。</p></div>`;
+
+      let thDates = '';
+      state.dates.forEach((d, i) => {
+        thDates += `<th class="py-2 px-1 border-b-2 border-r border-gray-200 sticky-header min-w-[48px] text-center ${getWeekdayHeaderStyle(state.weekdays[i])}"><div class="text-sm font-bold">${d}</div><div class="text-[10px] opacity-80">${state.weekdays[i]}</div></th>`;
+      });
+
+      let trRows = '';
+      state.scheduleData.forEach(emp => {
+        let tdShifts = '';
+        emp.shifts.forEach((shift, i) => {
+          let shiftHtml = shift ? `<div class="inline-flex items-center justify-center w-full min-h-[36px] rounded shadow-sm text-xs px-1 ${getShiftColor(shift)}">${shift}</div>` : '';
+          tdShifts += `<td class="p-1.5 text-center border-r border-gray-100 ${getDayColumnStyle(state.weekdays[i])}">${shiftHtml}</td>`;
+        });
+
+        trRows += `
+          <tr class="hover:bg-gray-50 border-b border-gray-100">
+            <td class="p-2 border-r-2 border-gray-200 sticky-col shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] w-[140px] max-w-[140px] overflow-hidden">
+              <div class="text-[10px] text-gray-400 font-mono truncate">${emp.id}</div>
+              <div class="text-sm font-bold text-gray-800 truncate">${emp.name}</div>
+            </td>
+            ${tdShifts}
+          </tr>
+        `;
+      });
+
+      return `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[600px]">
+          <div class="p-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+            <span class="text-xs text-gray-500">※表は横にスクロールできます</span>
+            <span class="text-xs bg-indigo-100 text-indigo-800 px-3 py-1 rounded-full font-bold">${state.scheduleData.length} 名</span>
+          </div>
+          <div class="overflow-auto flex-grow relative pb-4">
+            <table class="w-full min-w-max border-collapse text-left">
+              <thead>
+                <tr>
+                  <th class="p-2 border-b-2 border-r-2 border-gray-200 sticky-corner shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] w-[140px]">
+                    <div class="text-xs text-gray-500">社員番号</div>
+                    <div class="text-sm font-bold text-gray-800">氏名</div>
+                  </th>
+                  ${thDates}
+                </tr>
+              </thead>
+              <tbody>${trRows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCalendarView() {
+      if (state.scheduleData.length === 0) return `<div class="bg-white rounded-xl border border-gray-100 flex flex-col items-center justify-center h-64 text-gray-400"><p>Excelファイル（またはCSV）をアップロードしてください。</p></div>`;
+
+      let options = '';
+      state.scheduleData.forEach((emp, idx) => {
+        options += `<option value="${idx}" ${idx === state.selectedEmpIndex ? 'selected' : ''}>${emp.name} (No.${emp.id})</option>`;
+      });
+
+      const emp = state.scheduleData[state.selectedEmpIndex];
+      const firstDay = new Date(state.year, state.month - 1, 1).getDay();
+      const cells = Array(firstDay).fill(null);
+      
+      state.dates.forEach((dateStr, i) => {
+        cells.push({ dateStr, shift: emp.shifts[i], wd: state.weekdays[i] });
+      });
+
+      let calendarHtml = '';
+      const dayHeaders = ['日', '月', '火', '水', '木', '金', '土'];
+      dayHeaders.forEach((day, idx) => {
+        let style = idx === 0 ? 'bg-red-50 text-red-600' : idx === 6 ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600';
+        calendarHtml += `<div class="text-center text-xs sm:text-sm font-bold p-2 rounded-t-lg ${style}">${day}</div>`;
+      });
+
+      cells.forEach(cell => {
+        if (!cell) {
+          calendarHtml += `<div class="p-2 border border-transparent rounded-lg bg-gray-50/50"></div>`;
+          return;
+        }
+        let style = cell.wd === '日' ? 'border-red-100 bg-red-50/10' : cell.wd === '土' ? 'border-blue-100 bg-blue-50/10' : 'border-gray-100';
+        let textStyle = cell.wd === '日' ? 'text-red-500' : cell.wd === '土' ? 'text-blue-500' : 'text-gray-700';
+        let shiftHtml = cell.shift ? `<div class="mt-auto text-center py-2 rounded-md text-xs sm:text-sm font-bold shadow-sm ${getShiftColor(cell.shift)}">${cell.shift}</div>` : '';
+        
+        calendarHtml += `
+          <div class="bg-white border rounded-lg p-1.5 sm:p-2 flex flex-col min-h-[90px] sm:min-h-[110px] shadow-sm ${style}">
+            <div class="text-right text-sm sm:text-base font-bold mb-1 ${textStyle}">${cell.dateStr}</div>
+            ${shiftHtml}
+          </div>
+        `;
+      });
+
+      return `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6">
+          <div class="mb-6 bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+            <label class="flex items-center gap-2 text-sm font-bold text-indigo-900 mb-2">表示するスタッフ</label>
+            <select onchange="changeEmp(Number(this.value))" class="w-full p-3 bg-white border border-indigo-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-indigo-500 appearance-none text-lg">
+              ${options}
+            </select>
+          </div>
+          <div class="grid grid-cols-7 gap-1 sm:gap-2">
+            ${calendarHtml}
+          </div>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>
