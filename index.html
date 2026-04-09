@@ -155,7 +155,6 @@
     }
 
     window.saveToCloud = async function() {
-      // エラーチェック
       if (state.scheduleData.length === 0) {
         showError('保存するデータがありません。Excelを読み込んでください。');
         return;
@@ -165,7 +164,6 @@
         return;
       }
       
-      // 保存中状態にする
       state.isSaving = true;
       state.error = '';
       state.saveMessage = '';
@@ -189,7 +187,6 @@
         console.error("保存エラー:", e);
         showError('保存に失敗しました。Firebaseの「Firestore Database」のルール設定が原因の可能性があります。');
       } finally {
-        // 保存中状態を解除
         state.isSaving = false;
         render();
         setTimeout(() => { state.saveMessage = ''; render(); }, 6000);
@@ -225,12 +222,16 @@
       }
     };
 
+    // 新人が追加されたフォーマットのサンプルデータ
     function loadSampleData() {
-      state.monthTitle = '【設定前】Excelを読み込んでください';
+      state.monthTitle = '2026年 4月 営業係勤務表 (未連携)';
       state.dates = Array.from({ length: 30 }, (_, i) => String(i + 1));
       state.weekdays = ['水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木'];
       state.scheduleData = [
-        { id: '000', name: '設定待ち 太郎', shifts: ['休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早','遅','休','早','早','遅','休','早'] }
+        { id: '2430106', name: '荒明　俊介', shifts: ['法休', '泊', '明', '遅日', '泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '遅日', '泊', '明', '公休', '法休', '変休', '遅日', '遅日', '年休', '泊', '明', '法休', '泊'] },
+        { id: '2530516', name: '平林　侑馬', shifts: ['泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '遅日', '泊', '明', '公休'] },
+        { id: '2600001', name: '新人　スタッフA', shifts: ['〇', '〇', '公休', '法休', '早', '早', '遅', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇'] },
+        { id: '2600002', name: '新人　スタッフB', shifts: ['早', '遅日', '〇', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '早'] }
       ];
     }
 
@@ -337,6 +338,7 @@
       if (wd === '日') return 'bg-red-50/20';
       return 'bg-white';
     }
+    // シフトの種類に応じて色を自動判別
     function getShiftColor(shiftStr) {
       if (!shiftStr) return '';
       const s = shiftStr.trim();
@@ -345,7 +347,8 @@
       if (s.includes('法休') || s.includes('公休')) return 'bg-red-100 text-red-800 font-medium border border-red-200';
       if (s.includes('年休')) return 'bg-pink-100 text-pink-800 font-medium border border-pink-200';
       if (s.includes('変休')) return 'bg-orange-100 text-orange-800 font-medium border border-orange-200';
-      if (s.includes('遅日') || s.includes('変出')) return 'bg-blue-100 text-blue-800 font-medium border border-blue-200';
+      if (s.includes('遅日') || s.includes('遅') || s.includes('変出')) return 'bg-blue-100 text-blue-800 font-medium border border-blue-200';
+      if (s.includes('早')) return 'bg-yellow-100 text-yellow-800 font-medium border border-yellow-200';
       if (s === '〇') return 'bg-emerald-100 text-emerald-800 font-bold border border-emerald-200';
       return 'bg-gray-100 text-gray-800 border border-gray-200';
     }
@@ -360,7 +363,6 @@
     function render() {
       const appDiv = document.getElementById('app');
       
-      // 致命的なバグ修正： HTMLの属性に disabled="${...}" と書くと常に無効になっていたのを修正
       const disableShareBtn = state.isSaving || state.scheduleData.length === 0 ? 'disabled' : '';
       
       let html = `
@@ -395,7 +397,6 @@
                 <span class="material-icons-outlined" style="font-size: 18px;">upload_file</span> Excel
               </button>
               
-              <!-- 修正箇所： ${disableShareBtn} で正しく制御 -->
               <button onclick="saveToCloud()" ${disableShareBtn} class="flex-1 sm:flex-none flex items-center justify-center gap-1 px-3 py-2 rounded-lg font-bold transition-all ${disableShareBtn ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'} text-sm">
                 <span class="material-icons-outlined" style="font-size: 18px;">${state.isSaving ? 'sync' : 'share'}</span> ${state.isSaving ? '保存中...' : '共有する'}
               </button>
@@ -473,4 +474,3 @@
   </script>
 </body>
 </html>
-              
