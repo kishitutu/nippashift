@@ -236,6 +236,19 @@
 
     // --- 休暇申請機能 ---
     
+    // 名前の入力・選択が変わった時に、申請済みのデータがあればカレンダーに読み込む
+    window.handleNameChange = function(name) {
+      state.currentRequestName = name;
+      if (state.requestData[name]) {
+        // 既存のデータをディープコピーしてセット
+        state.currentRequests = JSON.parse(JSON.stringify(state.requestData[name]));
+      } else {
+        // 新規の場合は空にする
+        state.currentRequests = {};
+      }
+      render();
+    };
+    
     // 申請タイプ（ペン）の切り替え
     window.setRequestType = function(type) {
       state.selectedRequestType = type;
@@ -245,7 +258,10 @@
     // カレンダーをタップしたときの処理
     window.toggleRequestDate = function(dateStr) {
       const nameInput = document.getElementById('requestNameInput');
-      if (nameInput) state.currentRequestName = nameInput.value;
+      // 手打ちで名前が変わっていてフォーカスが外れる前にタップされた場合の安全対策
+      if (nameInput && state.currentRequestName !== nameInput.value) {
+        window.handleNameChange(nameInput.value);
+      }
 
       // すでに同じタイプが塗られていたら「消す」、それ以外は「選択中のタイプで塗る」
       if (state.currentRequests[dateStr] === state.selectedRequestType) {
@@ -279,6 +295,8 @@
           currentDBRequests = reqSnap.data().requests || {};
         }
         
+        const isUpdate = currentDBRequests[state.currentRequestName] !== undefined;
+        
         currentDBRequests[state.currentRequestName] = state.currentRequests;
 
         await window.setDoc(reqRef, {
@@ -287,10 +305,9 @@
         });
 
         state.requestData = currentDBRequests;
-        state.saveMessage = `${state.currentRequestName} さんの来月の休暇申請を送信しました！`;
-        state.currentRequests = {}; // 選択をクリア
-        state.currentRequestName = ''; // 名前もクリア
-        state.viewMode = 'request_list'; // 送信後に一覧へ
+        state.saveMessage = `${state.currentRequestName} さんの来月の休暇申請を${isUpdate ? '更新' : '送信'}しました！`;
+        
+        // 送信後もカレンダーの表示と名前を残し、記録が分かるようにする
       } catch (e) {
         console.error("申請エラー:", e);
         showError("休暇申請の送信に失敗しました。");
@@ -325,6 +342,11 @@
 
         state.requestData = currentDBRequests;
         state.saveMessage = `${name} さんの申請を取り消しました。`;
+        
+        // もし現在申請カレンダーで開いている名前が消されたら、カレンダーの表示もリセットする
+        if (state.currentRequestName === name) {
+          state.currentRequests = {};
+        }
       } catch(e) {
         showError("削除に失敗しました。");
       } finally {
@@ -630,7 +652,7 @@
       
       const firstDay = new Date(nextMonthInfo.year, nextMonthInfo.month - 1, 1).getDay();
       for (let i = 0; i < firstDay; i++) {
-        calendarHtml += `<div class="p-2 border border-transparent rounded-lg bg-gray-50/50 hidden sm:block"></div>`;
+        calendarHtml += `<div class="p-2 border border-transparent rounded-lg bg-gray-50/50"></div>`;
       }
 
       nextMonthInfo.dates.forEach((dateStr, i) => {
@@ -641,23 +663,23 @@
         let textStyle = wd === '日' ? 'text-red-500' : wd === '土' ? 'text-blue-500' : 'text-gray-700';
         
         let selectedStyle = style;
-        let badgeHtml = `<div class="mt-auto py-1 sm:py-2"></div>`;
+        let badgeHtml = `<div class="mt-auto py-1 sm:py-2.5"></div>`;
 
         // 選択されている申請タイプによってマスの色を変える
         if (reqType === '年休') {
           selectedStyle = 'bg-pink-50 border-pink-400 shadow-inner ring-2 ring-pink-400';
-          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-pink-500 text-white shadow-sm">年休</div>`;
+          badgeHtml = `<div class="mt-auto text-center py-1.5 sm:py-2.5 rounded-md text-[10px] sm:text-sm font-bold shadow-sm leading-none flex items-center justify-center bg-pink-500 text-white">年休</div>`;
         } else if (reqType === '明') {
           selectedStyle = 'bg-cyan-50 border-cyan-400 shadow-inner ring-2 ring-cyan-400';
-          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-cyan-500 text-white shadow-sm">明</div>`;
+          badgeHtml = `<div class="mt-auto text-center py-1.5 sm:py-2.5 rounded-md text-[10px] sm:text-sm font-bold shadow-sm leading-none flex items-center justify-center bg-cyan-500 text-white">明</div>`;
         } else if (reqType === '早日勤') {
           selectedStyle = 'bg-yellow-50 border-yellow-400 shadow-inner ring-2 ring-yellow-400';
-          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-yellow-500 text-white shadow-sm">早日勤</div>`;
+          badgeHtml = `<div class="mt-auto text-center py-1.5 sm:py-2.5 rounded-md text-[10px] sm:text-sm font-bold shadow-sm leading-none flex items-center justify-center bg-yellow-500 text-white">早日勤</div>`;
         }
 
         calendarHtml += `
-          <div onclick="toggleRequestDate('${dateStr}')" class="cursor-pointer border rounded-lg p-1.5 sm:p-2 flex flex-col min-h-[70px] sm:min-h-[100px] shadow-sm transition-all hover:shadow-md ${selectedStyle}">
-            <div class="text-right text-sm sm:text-base font-bold mb-1 ${textStyle}">${dateStr} <span class="text-[10px] sm:text-xs opacity-80">${wd}</span></div>
+          <div onclick="toggleRequestDate('${dateStr}')" class="cursor-pointer border rounded-lg p-1 sm:p-2 flex flex-col min-h-[70px] sm:min-h-[110px] shadow-sm transition-all hover:shadow-md ${selectedStyle}">
+            <div class="text-right text-sm sm:text-base font-bold mb-1 ${textStyle}">${dateStr} <span class="text-[10px] sm:text-xs opacity-80 sm:hidden block leading-none">${wd}</span></div>
             ${badgeHtml}
           </div>
         `;
@@ -667,6 +689,9 @@
       state.scheduleData.forEach(emp => { datalistHtml += `<option value="${emp.name}">`; });
       datalistHtml += `</datalist>`;
 
+      const hasExistingRequest = state.requestData[state.currentRequestName] !== undefined;
+      const btnText = state.isSaving ? '送信中...' : (hasExistingRequest ? '申請内容を更新する' : 'この内容で申請する');
+
       return `
         <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 animate-in fade-in zoom-in-95 duration-300">
           <div class="mb-6 bg-pink-50 p-4 rounded-xl border border-pink-100 flex flex-col sm:flex-row gap-4 items-end">
@@ -674,12 +699,12 @@
               <label class="flex items-center gap-2 text-sm font-bold text-pink-900 mb-2">
                 <span class="material-icons-outlined" style="font-size:18px;">person</span>申請する方のお名前
               </label>
-              <input type="text" id="requestNameInput" list="empNames" value="${state.currentRequestName}" onchange="state.currentRequestName=this.value" class="w-full p-3 bg-white border border-pink-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-pink-500 focus:outline-none text-lg" placeholder="名前を入力してください">
+              <input type="text" id="requestNameInput" list="empNames" value="${state.currentRequestName}" onchange="handleNameChange(this.value)" class="w-full p-3 bg-white border border-pink-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-pink-500 focus:outline-none text-lg" placeholder="名前を入力してください">
               ${datalistHtml}
             </div>
             <button onclick="submitRequest()" ${state.isSaving ? 'disabled' : ''} class="w-full sm:w-auto px-6 py-3 bg-pink-600 text-white font-bold rounded-lg shadow-sm hover:bg-pink-700 transition-colors flex items-center justify-center gap-2">
               <span class="material-icons-outlined">${state.isSaving ? 'sync' : 'send'}</span>
-              ${state.isSaving ? '送信中...' : 'この内容で申請する'}
+              ${btnText}
             </button>
           </div>
           
@@ -699,9 +724,9 @@
             <p class="text-xs text-gray-500">ボタンで種類を選んでから、カレンダーの日付をタップして色を塗ってください。</p>
           </div>
 
-          <div class="grid grid-cols-4 sm:grid-cols-7 gap-1.5 sm:gap-2">
+          <div class="grid grid-cols-7 gap-1 sm:gap-2">
             ${['日', '月', '火', '水', '木', '金', '土'].map((day, idx) => `
-              <div class="hidden sm:block text-center text-sm font-bold p-2 rounded-t-lg ${idx === 0 ? 'bg-red-50 text-red-600' : idx === 6 ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}">${day}</div>
+              <div class="text-center text-xs sm:text-sm font-bold p-2 rounded-t-lg ${idx === 0 ? 'bg-red-50 text-red-600' : idx === 6 ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}">${day}</div>
             `).join('')}
             
             ${calendarHtml}
