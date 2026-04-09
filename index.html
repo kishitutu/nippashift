@@ -36,6 +36,9 @@
     #loading { position: fixed; inset: 0; background: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; }
     .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #4f46e5; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    /* スクロールバー非表示 (タブ用) */
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-2 sm:p-4">
@@ -69,20 +72,38 @@
   </div>
 
   <script>
+    // 来月の情報を自動計算する
+    function getNextMonthInfo() {
+      const today = new Date();
+      const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      const year = nextMonthDate.getFullYear();
+      const month = nextMonthDate.getMonth() + 1;
+      const daysInMonth = new Date(year, month, 0).getDate();
+      
+      const dates = [];
+      const weekdays = [];
+      const weekdaysStr = ['日', '月', '火', '水', '木', '金', '土'];
+      for (let i = 1; i <= daysInMonth; i++) {
+        dates.push(String(i));
+        weekdays.push(weekdaysStr[new Date(year, month - 1, i).getDay()]);
+      }
+      return { year, month, dates, weekdays };
+    }
+    const nextMonthInfo = getNextMonthInfo();
+
     let state = {
-      scheduleData: [],
-      dates: [],
-      weekdays: [],
-      monthTitle: '勤務スケジュール',
-      year: new Date().getFullYear(),
-      month: new Date().getMonth() + 1,
+      // シフト関連
+      scheduleData: [], dates: [], weekdays: [], monthTitle: '勤務スケジュール',
+      year: new Date().getFullYear(), month: new Date().getMonth() + 1,
       viewMode: window.innerWidth < 768 ? 'calendar' : 'table',
-      selectedEmpIndex: 0,
-      fileName: '',
-      error: '',
-      saveMessage: '',
-      isSaving: false,
-      isConnected: false
+      selectedEmpIndex: 0, fileName: '', error: '', saveMessage: '',
+      isSaving: false, isConnected: false,
+      
+      // 休暇申請関連
+      requestData: {}, // 全員の申請データ
+      currentRequestName: '', // 入力中の名前
+      currentRequests: {}, // 選択中の希望休 { "日付": "種類" }
+      selectedRequestType: '年休' // 選択中のペン（年休/明/早日勤）
     };
 
     window.onload = async () => {
@@ -130,6 +151,8 @@
     async function loadFromCloud() {
       try {
         if (!window.db) throw new Error("DB未接続");
+        
+        // 1. シフトデータの取得
         const docRef = window.doc(window.db, "schedules", "public_data");
         const docSnap = await window.getDoc(docRef);
 
@@ -144,6 +167,24 @@
         } else {
           loadSampleData();
         }
+
+        // 2. 来月の休暇申請データの取得
+        const reqRef = window.doc(window.db, "leave_requests", `${nextMonthInfo.year}-${nextMonthInfo.month}`);
+        const reqSnap = await window.getDoc(reqRef);
+        if (reqSnap.exists()) {
+          let rawRequests = reqSnap.data().requests || {};
+          
+          // 古い形式（配列）のデータが残っていたら、新しい形式（オブジェクト）に変換する安全対策
+          for (let name in rawRequests) {
+            if (Array.isArray(rawRequests[name])) {
+              const newObj = {};
+              rawRequests[name].forEach(d => { newObj[d] = '年休'; });
+              rawRequests[name] = newObj;
+            }
+          }
+          state.requestData = rawRequests;
+        }
+
       } catch (e) {
         console.error("データ取得エラー:", e);
         loadSampleData();
@@ -181,7 +222,7 @@
           updatedAt: new Date().toISOString()
         });
         
-        state.saveMessage = 'クラウドに共有しました！URLを送れば全員が確認できます。';
+        state.saveMessage = 'シフト表をクラウドに共有しました！';
         state.fileName = '';
       } catch (e) {
         console.error("保存エラー:", e);
@@ -193,6 +234,107 @@
       }
     };
 
+    // --- 休暇申請機能 ---
+    
+    // 申請タイプ（ペン）の切り替え
+    window.setRequestType = function(type) {
+      state.selectedRequestType = type;
+      render();
+    };
+
+    // カレンダーをタップしたときの処理
+    window.toggleRequestDate = function(dateStr) {
+      const nameInput = document.getElementById('requestNameInput');
+      if (nameInput) state.currentRequestName = nameInput.value;
+
+      // すでに同じタイプが塗られていたら「消す」、それ以外は「選択中のタイプで塗る」
+      if (state.currentRequests[dateStr] === state.selectedRequestType) {
+        delete state.currentRequests[dateStr];
+      } else {
+        state.currentRequests[dateStr] = state.selectedRequestType;
+      }
+      render();
+    };
+
+    window.submitRequest = async function() {
+      const nameInput = document.getElementById('requestNameInput');
+      if (nameInput) state.currentRequestName = nameInput.value;
+
+      if (!state.currentRequestName.trim()) return showError("申請者のお名前を入力してください。");
+      if (Object.keys(state.currentRequests).length === 0) return showError("希望休が1日も選択されていません。");
+      if (!state.isConnected || !window.db) return openConfigModal();
+
+      state.isSaving = true;
+      state.error = '';
+      state.saveMessage = '';
+      render();
+
+      try {
+        const reqRef = window.doc(window.db, "leave_requests", `${nextMonthInfo.year}-${nextMonthInfo.month}`);
+        
+        // 他の人の申請を消さないようにマージ
+        const reqSnap = await window.getDoc(reqRef);
+        let currentDBRequests = {};
+        if (reqSnap.exists()) {
+          currentDBRequests = reqSnap.data().requests || {};
+        }
+        
+        currentDBRequests[state.currentRequestName] = state.currentRequests;
+
+        await window.setDoc(reqRef, {
+          requests: currentDBRequests,
+          updatedAt: new Date().toISOString()
+        });
+
+        state.requestData = currentDBRequests;
+        state.saveMessage = `${state.currentRequestName} さんの来月の休暇申請を送信しました！`;
+        state.currentRequests = {}; // 選択をクリア
+        state.currentRequestName = ''; // 名前もクリア
+        state.viewMode = 'request_list'; // 送信後に一覧へ
+      } catch (e) {
+        console.error("申請エラー:", e);
+        showError("休暇申請の送信に失敗しました。");
+      } finally {
+        state.isSaving = false;
+        render();
+        setTimeout(() => { state.saveMessage = ''; render(); }, 6000);
+      }
+    };
+
+    window.deleteRequest = async function(name) {
+      if (!confirm(`${name} さんの休暇申請を取り消しますか？`)) return;
+      if (!state.isConnected || !window.db) return openConfigModal();
+
+      state.isSaving = true;
+      render();
+
+      try {
+        const reqRef = window.doc(window.db, "leave_requests", `${nextMonthInfo.year}-${nextMonthInfo.month}`);
+        const reqSnap = await window.getDoc(reqRef);
+        let currentDBRequests = {};
+        if (reqSnap.exists()) {
+          currentDBRequests = reqSnap.data().requests || {};
+        }
+        
+        delete currentDBRequests[name];
+
+        await window.setDoc(reqRef, {
+          requests: currentDBRequests,
+          updatedAt: new Date().toISOString()
+        });
+
+        state.requestData = currentDBRequests;
+        state.saveMessage = `${name} さんの申請を取り消しました。`;
+      } catch(e) {
+        showError("削除に失敗しました。");
+      } finally {
+        state.isSaving = false;
+        render();
+        setTimeout(() => { state.saveMessage = ''; render(); }, 4000);
+      }
+    };
+
+    // --- Firebase 設定 ---
     window.openConfigModal = function() {
       document.getElementById('configModal').style.display = 'flex';
       document.getElementById('configError').classList.add('hidden');
@@ -222,7 +364,6 @@
       }
     };
 
-    // 新人が追加されたフォーマットのサンプルデータ
     function loadSampleData() {
       state.monthTitle = '2026年 4月 営業係勤務表 (未連携)';
       state.dates = Array.from({ length: 30 }, (_, i) => String(i + 1));
@@ -233,6 +374,10 @@
         { id: '2600001', name: '新人　スタッフA', shifts: ['〇', '〇', '公休', '法休', '早', '早', '遅', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇'] },
         { id: '2600002', name: '新人　スタッフB', shifts: ['早', '遅日', '〇', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '早'] }
       ];
+      // サンプル用の申請データ
+      state.requestData = {
+        '荒明　俊介': { '5': '年休', '6': '明', '12': '早日勤' }
+      };
     }
 
     function showError(msg) {
@@ -338,7 +483,6 @@
       if (wd === '日') return 'bg-red-50/20';
       return 'bg-white';
     }
-    // シフトの種類に応じて色を自動判別
     function getShiftColor(shiftStr) {
       if (!shiftStr) return '';
       const s = shiftStr.trim();
@@ -347,8 +491,8 @@
       if (s.includes('法休') || s.includes('公休')) return 'bg-red-100 text-red-800 font-medium border border-red-200';
       if (s.includes('年休')) return 'bg-pink-100 text-pink-800 font-medium border border-pink-200';
       if (s.includes('変休')) return 'bg-orange-100 text-orange-800 font-medium border border-orange-200';
+      if (s.includes('早日勤') || s.includes('早')) return 'bg-yellow-100 text-yellow-800 font-medium border border-yellow-200';
       if (s.includes('遅日') || s.includes('遅') || s.includes('変出')) return 'bg-blue-100 text-blue-800 font-medium border border-blue-200';
-      if (s.includes('早')) return 'bg-yellow-100 text-yellow-800 font-medium border border-yellow-200';
       if (s === '〇') return 'bg-emerald-100 text-emerald-800 font-bold border border-emerald-200';
       return 'bg-gray-100 text-gray-800 border border-gray-200';
     }
@@ -362,7 +506,6 @@
 
     function render() {
       const appDiv = document.getElementById('app');
-      
       const disableShareBtn = state.isSaving || state.scheduleData.length === 0 ? 'disabled' : '';
       
       let html = `
@@ -383,12 +526,19 @@
           </div>
           
           <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div class="flex bg-gray-100 p-1 rounded-lg">
-              <button onclick="changeView('table')" class="flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'table' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
+            
+            <div class="flex bg-gray-100 p-1 rounded-lg overflow-x-auto hide-scrollbar whitespace-nowrap">
+              <button onclick="changeView('table')" class="flex-none sm:flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'table' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
                 <span class="material-icons-outlined" style="font-size: 18px;">grid_on</span> 全体
               </button>
-              <button onclick="changeView('calendar')" class="flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'calendar' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
+              <button onclick="changeView('calendar')" class="flex-none sm:flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'calendar' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500'}">
                 <span class="material-icons-outlined" style="font-size: 18px;">event</span> 個人
+              </button>
+              <button onclick="changeView('request')" class="flex-none sm:flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'request' ? 'bg-white text-pink-600 shadow-sm' : 'text-gray-500'}">
+                <span class="material-icons-outlined" style="font-size: 18px;">edit_calendar</span> 申請
+              </button>
+              <button onclick="changeView('request_list')" class="flex-none sm:flex-1 flex justify-center items-center gap-1 px-3 py-2 rounded-md text-sm font-bold transition-all ${state.viewMode === 'request_list' ? 'bg-white text-pink-600 shadow-sm' : 'text-gray-500'}">
+                <span class="material-icons-outlined" style="font-size: 18px;">fact_check</span> 申請一覧
               </button>
             </div>
 
@@ -414,13 +564,15 @@
         html += `<div class="p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700"><span class="material-icons-outlined">error_outline</span><div><p class="font-bold">エラー</p><p class="text-sm">${state.error}</p></div></div>`;
       }
       if (state.saveMessage) {
-        html += `<div class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3 text-emerald-800 shadow-sm"><span class="material-icons-outlined text-emerald-600">cloud_done</span><div class="flex-1"><p class="font-bold mb-1">${state.saveMessage}</p><button onclick="copyUrl()" class="mt-2 px-4 py-1.5 bg-emerald-600 text-white rounded text-sm font-bold hover:bg-emerald-700">URLをコピーする</button></div></div>`;
+        html += `<div class="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3 text-emerald-800 shadow-sm"><span class="material-icons-outlined text-emerald-600">cloud_done</span><div class="flex-1"><p class="font-bold mb-1">${state.saveMessage}</p></div></div>`;
       } else if (state.fileName && !state.error) {
         html += `<div class="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-blue-800 text-sm shadow-sm"><span class="material-icons-outlined text-blue-600">info</span>${state.fileName}</div>`;
       }
 
       if (state.viewMode === 'table') html += renderTableView();
-      else html += renderCalendarView();
+      else if (state.viewMode === 'calendar') html += renderCalendarView();
+      else if (state.viewMode === 'request') html += renderRequestView();
+      else if (state.viewMode === 'request_list') html += renderRequestListView();
 
       appDiv.innerHTML = html;
     }
@@ -470,6 +622,158 @@
       });
 
       return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6"><div class="mb-6 bg-indigo-50 p-4 rounded-xl border border-indigo-100"><label class="flex items-center gap-2 text-sm font-bold text-indigo-900 mb-2">表示するスタッフ</label><select onchange="changeEmp(Number(this.value))" class="w-full p-3 bg-white border border-indigo-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-indigo-500 appearance-none text-lg">${options}</select></div><div class="grid grid-cols-7 gap-1 sm:gap-2">${calendarHtml}</div></div>`;
+    }
+
+    // --- 休暇申請画面のレンダリング ---
+    function renderRequestView() {
+      let calendarHtml = '';
+      
+      const firstDay = new Date(nextMonthInfo.year, nextMonthInfo.month - 1, 1).getDay();
+      for (let i = 0; i < firstDay; i++) {
+        calendarHtml += `<div class="p-2 border border-transparent rounded-lg bg-gray-50/50 hidden sm:block"></div>`;
+      }
+
+      nextMonthInfo.dates.forEach((dateStr, i) => {
+        let wd = nextMonthInfo.weekdays[i];
+        let reqType = state.currentRequests[dateStr]; // 選択されているタイプ
+        
+        let style = wd === '日' ? 'border-red-100 bg-red-50/10' : wd === '土' ? 'border-blue-100 bg-blue-50/10' : 'border-gray-100 bg-white';
+        let textStyle = wd === '日' ? 'text-red-500' : wd === '土' ? 'text-blue-500' : 'text-gray-700';
+        
+        let selectedStyle = style;
+        let badgeHtml = `<div class="mt-auto py-1 sm:py-2"></div>`;
+
+        // 選択されている申請タイプによってマスの色を変える
+        if (reqType === '年休') {
+          selectedStyle = 'bg-pink-50 border-pink-400 shadow-inner ring-2 ring-pink-400';
+          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-pink-500 text-white shadow-sm">年休</div>`;
+        } else if (reqType === '明') {
+          selectedStyle = 'bg-cyan-50 border-cyan-400 shadow-inner ring-2 ring-cyan-400';
+          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-cyan-500 text-white shadow-sm">明</div>`;
+        } else if (reqType === '早日勤') {
+          selectedStyle = 'bg-yellow-50 border-yellow-400 shadow-inner ring-2 ring-yellow-400';
+          badgeHtml = `<div class="mt-auto text-center py-1 sm:py-2 rounded text-xs font-bold bg-yellow-500 text-white shadow-sm">早日勤</div>`;
+        }
+
+        calendarHtml += `
+          <div onclick="toggleRequestDate('${dateStr}')" class="cursor-pointer border rounded-lg p-1.5 sm:p-2 flex flex-col min-h-[70px] sm:min-h-[100px] shadow-sm transition-all hover:shadow-md ${selectedStyle}">
+            <div class="text-right text-sm sm:text-base font-bold mb-1 ${textStyle}">${dateStr} <span class="text-[10px] sm:text-xs opacity-80">${wd}</span></div>
+            ${badgeHtml}
+          </div>
+        `;
+      });
+
+      let datalistHtml = `<datalist id="empNames">`;
+      state.scheduleData.forEach(emp => { datalistHtml += `<option value="${emp.name}">`; });
+      datalistHtml += `</datalist>`;
+
+      return `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 animate-in fade-in zoom-in-95 duration-300">
+          <div class="mb-6 bg-pink-50 p-4 rounded-xl border border-pink-100 flex flex-col sm:flex-row gap-4 items-end">
+            <div class="flex-1 w-full">
+              <label class="flex items-center gap-2 text-sm font-bold text-pink-900 mb-2">
+                <span class="material-icons-outlined" style="font-size:18px;">person</span>申請する方のお名前
+              </label>
+              <input type="text" id="requestNameInput" list="empNames" value="${state.currentRequestName}" onchange="state.currentRequestName=this.value" class="w-full p-3 bg-white border border-pink-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-pink-500 focus:outline-none text-lg" placeholder="名前を入力してください">
+              ${datalistHtml}
+            </div>
+            <button onclick="submitRequest()" ${state.isSaving ? 'disabled' : ''} class="w-full sm:w-auto px-6 py-3 bg-pink-600 text-white font-bold rounded-lg shadow-sm hover:bg-pink-700 transition-colors flex items-center justify-center gap-2">
+              <span class="material-icons-outlined">${state.isSaving ? 'sync' : 'send'}</span>
+              ${state.isSaving ? '送信中...' : 'この内容で申請する'}
+            </button>
+          </div>
+          
+          <div class="mb-4">
+            <h3 class="text-lg font-bold text-gray-800 flex items-center gap-2 mb-2">
+              <span class="material-icons-outlined text-pink-500">edit_calendar</span>
+              来月（${nextMonthInfo.year}年 ${nextMonthInfo.month}月）の希望休を選択
+            </h3>
+            
+            <!-- 申請タイプ（ペン）の切り替えボタン -->
+            <div class="flex flex-wrap gap-2 mb-3 bg-gray-50 p-2 rounded-lg border border-gray-200">
+              <button onclick="setRequestType('年休')" class="flex-1 sm:flex-none px-4 py-2 rounded-md font-bold border transition-all shadow-sm ${state.selectedRequestType === '年休' ? 'bg-pink-500 text-white border-pink-600 ring-2 ring-pink-300' : 'bg-white text-pink-600 border-pink-200 hover:bg-pink-50'}">年休</button>
+              <button onclick="setRequestType('明')" class="flex-1 sm:flex-none px-4 py-2 rounded-md font-bold border transition-all shadow-sm ${state.selectedRequestType === '明' ? 'bg-cyan-500 text-white border-cyan-600 ring-2 ring-cyan-300' : 'bg-white text-cyan-600 border-cyan-200 hover:bg-cyan-50'}">明 <span class="text-xs font-normal hidden sm:inline">(明け勤務)</span></button>
+              <button onclick="setRequestType('早日勤')" class="flex-1 sm:flex-none px-4 py-2 rounded-md font-bold border transition-all shadow-sm ${state.selectedRequestType === '早日勤' ? 'bg-yellow-500 text-white border-yellow-600 ring-2 ring-yellow-300' : 'bg-white text-yellow-600 border-yellow-200 hover:bg-yellow-50'}">早日勤</button>
+            </div>
+            
+            <p class="text-xs text-gray-500">ボタンで種類を選んでから、カレンダーの日付をタップして色を塗ってください。</p>
+          </div>
+
+          <div class="grid grid-cols-4 sm:grid-cols-7 gap-1.5 sm:gap-2">
+            ${['日', '月', '火', '水', '木', '金', '土'].map((day, idx) => `
+              <div class="hidden sm:block text-center text-sm font-bold p-2 rounded-t-lg ${idx === 0 ? 'bg-red-50 text-red-600' : idx === 6 ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}">${day}</div>
+            `).join('')}
+            
+            ${calendarHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    // --- 申請一覧画面のレンダリング ---
+    function renderRequestListView() {
+      const reqKeys = Object.keys(state.requestData);
+
+      if (reqKeys.length === 0) {
+        return `<div class="bg-white rounded-xl border border-gray-100 flex flex-col items-center justify-center h-64 text-gray-400"><span class="material-icons-outlined text-4xl mb-2">inbox</span><p>まだ来月（${nextMonthInfo.year}年${nextMonthInfo.month}月）の休暇申請は届いていません。</p></div>`;
+      }
+
+      let trRows = '';
+      reqKeys.forEach(name => {
+        let daysObj = state.requestData[name];
+        
+        // 日付順に並び替え
+        let sortedDates = Object.keys(daysObj).sort((a,b) => Number(a) - Number(b));
+        
+        // バッジの生成
+        let badges = sortedDates.map(d => {
+          let type = daysObj[d];
+          let badgeClass = '';
+          if(type === '年休') badgeClass = 'bg-pink-100 text-pink-800 border-pink-200';
+          else if(type === '明') badgeClass = 'bg-cyan-100 text-cyan-800 border-cyan-200';
+          else if(type === '早日勤') badgeClass = 'bg-yellow-100 text-yellow-800 border-yellow-200';
+          
+          return `<span class="inline-block ${badgeClass} text-xs px-2 py-1 rounded border mr-1 mb-1 font-bold">${d}日(${type})</span>`;
+        }).join('');
+        
+        trRows += `
+          <tr class="hover:bg-gray-50 border-b border-gray-100">
+            <td class="p-3 border-r border-gray-200 font-bold text-gray-800 whitespace-nowrap">${name}</td>
+            <td class="p-3 text-sm">${badges}</td>
+            <td class="p-3 text-center w-24">
+              <button onclick="deleteRequest('${name}')" class="text-red-500 hover:text-red-700 text-xs font-bold flex items-center justify-center gap-1 mx-auto bg-red-50 px-2 py-1 rounded border border-red-100">
+                <span class="material-icons-outlined text-[14px]">delete</span> 取消
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+
+      return `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
+          <div class="p-4 border-b border-gray-100 bg-pink-50 flex justify-between items-center">
+            <h3 class="text-lg font-bold text-pink-900 flex items-center gap-2">
+              <span class="material-icons-outlined">fact_check</span>
+              来月（${nextMonthInfo.year}年 ${nextMonthInfo.month}月）の申請一覧
+            </h3>
+            <span class="text-xs bg-pink-200 text-pink-900 px-3 py-1 rounded-full font-bold">計 ${reqKeys.length} 名</span>
+          </div>
+          <div class="overflow-auto relative">
+            <table class="w-full text-left border-collapse min-w-[500px]">
+              <thead>
+                <tr class="bg-white border-b-2 border-gray-200">
+                  <th class="p-3 text-sm text-gray-600 w-1/4">申請者名</th>
+                  <th class="p-3 text-sm text-gray-600">希望内容</th>
+                  <th class="p-3 text-sm text-gray-600 text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${trRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
     }
   </script>
 </body>
