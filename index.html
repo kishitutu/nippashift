@@ -58,7 +58,7 @@
         <h2 class="text-xl font-bold">データベース連携設定</h2>
       </div>
       <p class="text-sm text-gray-600 mb-4">
-        nippassを下の枠にそのまま貼り付けてください。
+        Firebase コンソールで取得した <code>const firebaseConfig = { ... }</code> のコードを下の枠にそのまま貼り付けてください。
       </p>
       <textarea id="configText" class="w-full h-40 p-3 border border-gray-300 rounded-lg text-xs font-mono bg-gray-50 focus:ring-2 focus:ring-indigo-500 focus:outline-none mb-4" placeholder="const firebaseConfig = {&#10;  apiKey: &quot;AIzaSy...&quot;,&#10;  authDomain: &quot;...&quot;,&#10;  ...&#10;};"></textarea>
       
@@ -240,10 +240,8 @@
     window.handleNameChange = function(name) {
       state.currentRequestName = name;
       if (state.requestData[name]) {
-        // 既存のデータをディープコピーしてセット
         state.currentRequests = JSON.parse(JSON.stringify(state.requestData[name]));
       } else {
-        // 新規の場合は空にする
         state.currentRequests = {};
       }
       render();
@@ -258,12 +256,10 @@
     // カレンダーをタップしたときの処理
     window.toggleRequestDate = function(dateStr) {
       const nameInput = document.getElementById('requestNameInput');
-      // 手打ちで名前が変わっていてフォーカスが外れる前にタップされた場合の安全対策
       if (nameInput && state.currentRequestName !== nameInput.value) {
         window.handleNameChange(nameInput.value);
       }
 
-      // すでに同じタイプが塗られていたら「消す」、それ以外は「選択中のタイプで塗る」
       if (state.currentRequests[dateStr] === state.selectedRequestType) {
         delete state.currentRequests[dateStr];
       } else {
@@ -288,7 +284,6 @@
       try {
         const reqRef = window.doc(window.db, "leave_requests", `${nextMonthInfo.year}-${nextMonthInfo.month}`);
         
-        // 他の人の申請を消さないようにマージ
         const reqSnap = await window.getDoc(reqRef);
         let currentDBRequests = {};
         if (reqSnap.exists()) {
@@ -296,7 +291,6 @@
         }
         
         const isUpdate = currentDBRequests[state.currentRequestName] !== undefined;
-        
         currentDBRequests[state.currentRequestName] = state.currentRequests;
 
         await window.setDoc(reqRef, {
@@ -306,8 +300,6 @@
 
         state.requestData = currentDBRequests;
         state.saveMessage = `${state.currentRequestName} さんの来月の休暇申請を${isUpdate ? '更新' : '送信'}しました！`;
-        
-        // 送信後もカレンダーの表示と名前を残し、記録が分かるようにする
       } catch (e) {
         console.error("申請エラー:", e);
         showError("休暇申請の送信に失敗しました。");
@@ -343,7 +335,6 @@
         state.requestData = currentDBRequests;
         state.saveMessage = `${name} さんの申請を取り消しました。`;
         
-        // もし現在申請カレンダーで開いている名前が消されたら、カレンダーの表示もリセットする
         if (state.currentRequestName === name) {
           state.currentRequests = {};
         }
@@ -392,11 +383,8 @@
       state.weekdays = ['水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木','金','土','日','月','火','水','木'];
       state.scheduleData = [
         { id: '2430106', name: '荒明　俊介', shifts: ['法休', '泊', '明', '遅日', '泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '遅日', '泊', '明', '公休', '法休', '変休', '遅日', '遅日', '年休', '泊', '明', '法休', '泊'] },
-        { id: '2530516', name: '平林　侑馬', shifts: ['泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '遅日', '泊', '明', '公休'] },
-        { id: '2600001', name: '新人　スタッフA', shifts: ['〇', '〇', '公休', '法休', '早', '早', '遅', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇'] },
-        { id: '2600002', name: '新人　スタッフB', shifts: ['早', '遅日', '〇', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '泊', '明', '遅日', '〇', '〇', '公休', '法休', '早', '早', '遅日', '公休', '法休', '泊', '明', '〇', '〇', '公休', '法休', '早'] }
+        { id: '2530516', name: '平林　侑馬', shifts: ['泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '〇', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '泊', '明', '公休', '法休', '泊', '明', '遅日', '泊', '明', '公休'] }
       ];
-      // サンプル用の申請データ
       state.requestData = {
         '荒明　俊介': { '5': '年休', '6': '明', '12': '早日勤' }
       };
@@ -625,7 +613,17 @@
       state.scheduleData.forEach((emp, idx) => { options += `<option value="${idx}" ${idx === state.selectedEmpIndex ? 'selected' : ''}>${emp.name} (No.${emp.id})</option>`; });
 
       const emp = state.scheduleData[state.selectedEmpIndex];
-      const firstDay = new Date(state.year, state.month - 1, 1).getDay();
+      
+      // 【修正ポイント】Excelの1日目の曜日をベースにカレンダーの空白（パディング）を計算する
+      const weekdayMap = { '日': 0, '月': 1, '火': 2, '水': 3, '木': 4, '金': 5, '土': 6 };
+      let firstDay = 0;
+      if (state.weekdays.length > 0 && weekdayMap[state.weekdays[0]] !== undefined) {
+        firstDay = weekdayMap[state.weekdays[0]];
+      } else {
+        // Excelに曜日がない場合は今まで通りシステム計算
+        firstDay = new Date(state.year, state.month - 1, 1).getDay();
+      }
+
       const cells = Array(firstDay).fill(null);
       state.dates.forEach((dateStr, i) => { cells.push({ dateStr, shift: emp.shifts[i], wd: state.weekdays[i] }); });
 
@@ -646,7 +644,6 @@
       return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6"><div class="mb-6 bg-indigo-50 p-4 rounded-xl border border-indigo-100"><label class="flex items-center gap-2 text-sm font-bold text-indigo-900 mb-2">表示するスタッフ</label><select onchange="changeEmp(Number(this.value))" class="w-full p-3 bg-white border border-indigo-200 rounded-lg text-gray-800 font-bold shadow-sm focus:ring-2 focus:ring-indigo-500 appearance-none text-lg">${options}</select></div><div class="grid grid-cols-7 gap-1 sm:gap-2">${calendarHtml}</div></div>`;
     }
 
-    // --- 休暇申請画面のレンダリング ---
     function renderRequestView() {
       let calendarHtml = '';
       
@@ -657,7 +654,7 @@
 
       nextMonthInfo.dates.forEach((dateStr, i) => {
         let wd = nextMonthInfo.weekdays[i];
-        let reqType = state.currentRequests[dateStr]; // 選択されているタイプ
+        let reqType = state.currentRequests[dateStr];
         
         let style = wd === '日' ? 'border-red-100 bg-red-50/10' : wd === '土' ? 'border-blue-100 bg-blue-50/10' : 'border-gray-100 bg-white';
         let textStyle = wd === '日' ? 'text-red-500' : wd === '土' ? 'text-blue-500' : 'text-gray-700';
@@ -665,7 +662,6 @@
         let selectedStyle = style;
         let badgeHtml = `<div class="mt-auto py-1 sm:py-2.5"></div>`;
 
-        // 選択されている申請タイプによってマスの色を変える
         if (reqType === '年休') {
           selectedStyle = 'bg-pink-50 border-pink-400 shadow-inner ring-2 ring-pink-400';
           badgeHtml = `<div class="mt-auto text-center py-1.5 sm:py-2.5 rounded-md text-[10px] sm:text-sm font-bold shadow-sm leading-none flex items-center justify-center bg-pink-500 text-white">年休</div>`;
@@ -714,7 +710,6 @@
               来月（${nextMonthInfo.year}年 ${nextMonthInfo.month}月）の希望休を選択
             </h3>
             
-            <!-- 申請タイプ（ペン）の切り替えボタン -->
             <div class="flex flex-wrap gap-2 mb-3 bg-gray-50 p-2 rounded-lg border border-gray-200">
               <button onclick="setRequestType('年休')" class="flex-1 sm:flex-none px-4 py-2 rounded-md font-bold border transition-all shadow-sm ${state.selectedRequestType === '年休' ? 'bg-pink-500 text-white border-pink-600 ring-2 ring-pink-300' : 'bg-white text-pink-600 border-pink-200 hover:bg-pink-50'}">年休</button>
               <button onclick="setRequestType('明')" class="flex-1 sm:flex-none px-4 py-2 rounded-md font-bold border transition-all shadow-sm ${state.selectedRequestType === '明' ? 'bg-cyan-500 text-white border-cyan-600 ring-2 ring-cyan-300' : 'bg-white text-cyan-600 border-cyan-200 hover:bg-cyan-50'}">明 <span class="text-xs font-normal hidden sm:inline">(明け勤務)</span></button>
@@ -735,7 +730,6 @@
       `;
     }
 
-    // --- 申請一覧画面のレンダリング ---
     function renderRequestListView() {
       const reqKeys = Object.keys(state.requestData);
 
@@ -747,10 +741,8 @@
       reqKeys.forEach(name => {
         let daysObj = state.requestData[name];
         
-        // 日付順に並び替え
         let sortedDates = Object.keys(daysObj).sort((a,b) => Number(a) - Number(b));
         
-        // バッジの生成
         let badges = sortedDates.map(d => {
           let type = daysObj[d];
           let badgeClass = '';
